@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HiDock Sync Android — POC v0.2
+<!-- HiDock Sync Android — POC v0.3
      พิสูจน์: WebUSB connect + list files + download 1 ไฟล์ + strip HDA → .mp3
      Protocol อ้างอิงจาก Handoff_hidock_mobile.md section 2 -->
 <html lang="th">
@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-<h1>HiDock Sync — POC <small style="color:#666">v0.2</small></h1>
+<h1>HiDock Sync — POC <small style="color:#666">v0.3</small></h1>
 
 <div id="toolbar">
   <button id="btnConnect" class="primary">1. Connect HiDock</button>
@@ -269,6 +269,7 @@ function saveBlob(blob, name) {
 $('btnConnect').onclick = connect;
 $('btnScan').onclick = scanFiles;
 $('btnSkip').onclick = () => { skipRequested = true; };
+log('POC v0.3 loaded');
 log(`WebUSB available: ${!!navigator.usb}`);
 </script>
 </body>
