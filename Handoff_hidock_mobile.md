@@ -65,7 +65,7 @@ HiDock (USB) ──WebUSB──► หน้า /hidock ใน browser (Chrome/E
 - สแกน byte ต่อ byte หา signature `0x04` หรือ `0x05` ตามด้วย `0x00 0x00`
 - byte ถัดไป = `nameLen` (ใช้ได้เมื่อ 10 < nameLen < 50)
 - filename = ASCII จาก `offset+4` ยาว `nameLen - 1` — ต้องมี `.hd`/`.hda` ถึงนับ
-- ต่อจาก filename ทันที: **4 bytes big-endian = ขนาดไฟล์ที่แท้จริง (expectedBytes)**
+- ขนาดไฟล์อยู่ที่ **`offset+4+nameLen`** (มี 1 byte คั่นหลังชื่อ): **4 bytes big-endian = expectedBytes** ⚠️ ไม่ใช่ต่อจาก filename ทันที — เคยสรุปผิดแล้วทำให้โหลดไฟล์ไม่เต็ม (แก้ 2026-07-19)
 - เจอแล้วข้าม `nameLen + 10` bytes ต่อ
 
 ### 2.4 Download 1 ไฟล์

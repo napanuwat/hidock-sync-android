@@ -1,5 +1,15 @@
 # Version History — HiDock Sync Android
 
+## v0.2 (2026-07-19)
+**Requirement:** ทดสอบบน S23 Ultra แล้ว connect + scan เจอไฟล์ + download ได้ แต่ไฟล์มาไม่เต็ม (ไฟล์ระดับชั่วโมงได้มาไม่ถึงนาที ทั้งขนาดที่แสดงและที่โหลดได้)
+
+**สาเหตุ:** handoff §2.3 สรุปตำแหน่ง expectedBytes คลาด 1 byte — โค้ดต้นฉบับ (`PY_PersonalPortal/templates/hidock.html`) อ่าน size ที่ `offset+4+nameLen` (มี byte คั่นหลังชื่อไฟล์) ไม่ใช่ `offset+4+nameLen-1` ทำให้ size เพี้ยนและ download loop หยุดก่อนได้ข้อมูลครบ
+
+**สิ่งที่แก้ (v0.2):**
+- `parseDirectory()`: อ่าน size ที่ `i+4+nameLen` ตามต้นฉบับ
+- Download command: สร้างจาก bytes ดิบของชื่อไฟล์ (`nameBytes`) แทน string ที่ trim แล้ว — เหมือนต้นฉบับ
+- แก้ `Handoff_hidock_mobile.md` §2.3 ให้ถูกต้อง กันสรุปผิดซ้ำ
+
 ## v0.1 (2026-07-19)
 **Requirement:** เริ่มโปรเจคจาก Handoff_hidock_mobile.md — ทำ POC ก่อน (ตาม checklist ข้อ 8) เพื่อพิสูจน์ว่า WebUSB + P1 Mini ใช้ได้จริงบน S23 Ultra ผ่าน OTG ก่อนลงแรงเขียน UI เต็ม
 

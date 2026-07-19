@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HiDock Sync Android — POC v0.1
+<!-- HiDock Sync Android — POC v0.2
      พิสูจน์: WebUSB connect + list files + download 1 ไฟล์ + strip HDA → .mp3
      Protocol อ้างอิงจาก Handoff_hidock_mobile.md section 2 -->
 <html lang="th">
@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-<h1>HiDock Sync — POC <small style="color:#666">v0.1</small></h1>
+<h1>HiDock Sync — POC <small style="color:#666">v0.2</small></h1>
 
 <div id="toolbar">
   <button id="btnConnect" class="primary">1. Connect HiDock</button>
@@ -146,13 +146,14 @@ function parseDirectory(bytes) {
     if ((bytes[i] === 0x04 || bytes[i] === 0x05) && bytes[i + 1] === 0x00 && bytes[i + 2] === 0x00) {
       const nameLen = bytes[i + 3];
       if (nameLen > 10 && nameLen < 50) {
-        let name = '';
-        for (let j = 0; j < nameLen - 1; j++) name += String.fromCharCode(bytes[i + 4 + j]);
-        if (/\.hda?$/i.test(name.trim())) {
-          const p = i + 4 + (nameLen - 1);
-          const size = (bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3];
-          files.push({ name: name.trim(), size: size >>> 0 });
-          log(`  พบ: ${name.trim()} (${size >>> 0} bytes)`);
+        const nameBytes = bytes.slice(i + 4, i + 4 + nameLen - 1);
+        const name = String.fromCharCode(...nameBytes);
+        if (name.includes('.hd')) {
+          // size อยู่ที่ i+4+nameLen (มี 1 byte คั่นหลังชื่อ) — ตรงตามต้นฉบับ hidock.html
+          const p = i + 4 + nameLen;
+          const size = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
+          files.push({ name, nameBytes, size });
+          log(`  พบ: ${name} (${size} bytes)`);
           i += nameLen + 10;
           continue;
         }
@@ -199,11 +200,11 @@ async function downloadFile(idx) {
   skipRequested = false;
   try {
     log(`เริ่มดาวน์โหลด ${f.name} (คาดหวัง ${f.size} bytes)`);
-    // command: 12 34 00 05 + padding + [11]=nameLen + filename
-    const cmd = new Uint8Array(12 + f.name.length);
+    // command: 12 34 00 05 + padding + [11]=len + filename (ใช้ bytes ดิบจาก directory)
+    const cmd = new Uint8Array(12 + f.nameBytes.length);
     cmd.set([0x12, 0x34, 0x00, 0x05]);
-    cmd[11] = f.name.length;
-    for (let i = 0; i < f.name.length; i++) cmd[12 + i] = f.name.charCodeAt(i);
+    cmd[11] = f.nameBytes.length;
+    cmd.set(f.nameBytes, 12);
     await device.transferOut(epOut.endpointNumber, cmd);
 
     const chunks = [];
