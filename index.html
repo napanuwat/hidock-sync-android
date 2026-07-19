@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HiDock Sync Android — v1.0
+<!-- HiDock Sync Android — v1.1
      HiDock (WebUSB) → strip HDA → .mp3 → upload OneDrive ผ่าน Microsoft Graph
      Auth: device code flow ผ่าน Cloudflare Worker proxy (worker/worker.js)
      Protocol อ้างอิง Handoff_hidock_mobile.md + ต้นฉบับ PY_PersonalPortal/templates/hidock.html -->
@@ -45,7 +45,7 @@
 </style>
 </head>
 <body>
-<h1>HiDock Sync <small style="color:#666">v1.0</small></h1>
+<h1>HiDock Sync <small style="color:#666">v1.1</small></h1>
 
 <div id="toolbar">
   <button id="btnConnect" class="primary">🔌 Connect HiDock</button>
@@ -66,8 +66,14 @@
 <div id="row2" style="display:none">
   <button id="btnScan">🔄 Scan</button>
   <button id="btnCheck" disabled>☁️ เช็คสถานะ OneDrive</button>
+  <select id="checkDaysSel" aria-label="ช่วงเวลาที่เช็คสถานะ OneDrive">
+    <option value="7" selected>เช็ค 7 วันล่าสุด</option>
+    <option value="15">เช็ค 15 วันล่าสุด</option>
+    <option value="30">เช็ค 30 วันล่าสุด</option>
+    <option value="60">เช็ค 60 วันล่าสุด</option>
+  </select>
   <select id="filterSel">
-    <option value="recent">30 วันล่าสุด</option>
+    <option id="recentFilterOption" value="recent">7 วันล่าสุด</option>
     <option value="new">เฉพาะ New</option>
     <option value="all">ทั้งหมด</option>
   </select>
@@ -92,13 +98,14 @@
 'use strict';
 
 // ================= config =================
-const VERSION = 'v1.0';
+const VERSION = 'v1.1';
 const WORKER_URL = 'https://hidock-auth.hidock-napanuwat.workers.dev';
 const CLIENT_ID = '14d82eec-204b-4c2f-b7e8-296a70dab67e';               // MS Graph Command Line Tools (public client)
 const SCOPE = 'Files.ReadWrite User.Read offline_access';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const P1_ROOT = '/00 Daily Records/_P1';       // path ใต้ OneDrive root
-const CHECK_DAYS = 30;                          // เช็คสถานะ/แสดงผล default กี่วันล่าสุด
+const DEFAULT_CHECK_DAYS = 7;                   // เช็คสถานะ/แสดงผล default กี่วันล่าสุด
+const CHECK_DAY_OPTIONS = [7, 15, 30, 60];
 const CHUNK = 9830400;                          // 30 × 320KiB — upload session chunk
 const DEVICES = {
   0x10D6: { name: 'HiDock Original', listCmd: '123400040000000e00000000', bytesPerSec: 16000 },
@@ -334,15 +341,21 @@ function showLoginState(me) {
 }
 
 // ================= OneDrive status check =================
-function recentDates() {
-  return [...new Set(allFiles.map(f => f.date))].sort().reverse().slice(0, CHECK_DAYS);
+function getCheckDays() {
+  const days = Number($('checkDaysSel').value);
+  return CHECK_DAY_OPTIONS.includes(days) ? days : DEFAULT_CHECK_DAYS;
+}
+
+function recentDates(days = getCheckDays()) {
+  return [...new Set(allFiles.map(f => f.date))].sort().reverse().slice(0, days);
 }
 
 async function checkOneDrive() {
   try {
     $('btnCheck').disabled = true;
-    const dates = recentDates();
-    setStatus(`เช็คสถานะ OneDrive (${dates.length} วันล่าสุด)...`);
+    const checkDays = getCheckDays();
+    const dates = recentDates(checkDays);
+    setStatus(`เช็คสถานะ OneDrive ช่วง ${checkDays} วันล่าสุด (${dates.length} วันที่มีไฟล์)...`);
     for (const d of dates) {
       const r = await graphFetch(`/me/drive/root:${encodeURI(P1_ROOT)}/${d}:/children?$select=name&$top=999`);
       if (r.status === 404) { existingByDate[d] = []; continue; }
@@ -357,7 +370,7 @@ async function checkOneDrive() {
       if (!hit) { f.checked = true; newCount++; }
       else f.checked = false;
     }
-    setStatus(`✅ เช็คแล้ว ${dates.length} วัน — พบไฟล์ใหม่ ${newCount} ไฟล์ (ติ๊กให้แล้ว)`);
+    setStatus(`✅ เช็คแล้ว ${checkDays} วันล่าสุด (${dates.length} วันที่มีไฟล์) — พบไฟล์ใหม่ ${newCount} ไฟล์ (ติ๊กให้แล้ว)`);
     renderTable();
   } catch (e) { setStatus('❌ เช็คสถานะ: ' + e.message); }
   finally { $('btnCheck').disabled = false; }
@@ -498,6 +511,10 @@ $('btnScan').onclick = scanFiles;
 $('btnCheck').onclick = checkOneDrive;
 $('btnImport').onclick = importSelected;
 $('btnSkip').onclick = () => { skipRequested = true; };
+$('checkDaysSel').onchange = () => {
+  $('recentFilterOption').textContent = `${getCheckDays()} วันล่าสุด`;
+  renderTable();
+};
 $('filterSel').onchange = renderTable;
 
 log(`HiDock Sync ${VERSION} loaded`);
