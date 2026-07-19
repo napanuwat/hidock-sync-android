@@ -1,142 +1,164 @@
 <!DOCTYPE html>
-<!-- HiDock Sync Android — POC v0.3
-     พิสูจน์: WebUSB connect + list files + download 1 ไฟล์ + strip HDA → .mp3
-     Protocol อ้างอิงจาก Handoff_hidock_mobile.md section 2 -->
+<!-- HiDock Sync Android — v1.0
+     HiDock (WebUSB) → strip HDA → .mp3 → upload OneDrive ผ่าน Microsoft Graph
+     Auth: device code flow ผ่าน Cloudflare Worker proxy (worker/worker.js)
+     Protocol อ้างอิง Handoff_hidock_mobile.md + ต้นฉบับ PY_PersonalPortal/templates/hidock.html -->
 <html lang="th">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HiDock Sync — POC</title>
+<title>HiDock Sync</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; padding: 12px; }
-  h1 { font-size: 1.2rem; margin: 4px 0 12px; }
-  button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; padding: 12px; padding-bottom: 90px; }
+  h1 { font-size: 1.15rem; margin: 4px 0 10px; }
+  button { font-size: .95rem; padding: 9px 14px; border-radius: 8px; border: none; cursor: pointer; background: #333; color: #eee; }
   button:disabled { opacity: .4; }
   .primary { background: #2563eb; color: #fff; }
+  .green { background: #16a34a; color: #fff; }
   .warn { background: #b45309; color: #fff; }
-  #toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-  #status { margin: 8px 0; font-size: .95rem; color: #9cf; min-height: 1.2em; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-  th, td { border-bottom: 1px solid #333; padding: 6px 4px; text-align: left; }
+  .chip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .78rem; background: #222; border: 1px solid #444; }
+  .chip.ok { border-color: #16a34a; color: #7f7; }
+  #toolbar, #row2 { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  #status { margin: 6px 0; font-size: .9rem; color: #9cf; min-height: 1.2em; }
+  #progress { margin: 6px 0; font-size: .88rem; color: #fc9; white-space: pre-line; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; }
+  th, td { border-bottom: 1px solid #2a2a2a; padding: 6px 4px; text-align: left; }
   td.num { text-align: right; white-space: nowrap; }
-  #progress { margin: 8px 0; font-size: .9rem; color: #fc9; white-space: pre-line; }
-  #logwrap { margin-top: 14px; }
-  #log { background: #000; color: #7f7; font-family: monospace; font-size: .72rem;
-         padding: 8px; border-radius: 6px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; }
-  summary { cursor: pointer; color: #888; }
+  tr.dayrow td { background: #1c2333; font-weight: 600; padding: 7px 4px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+  .dot.local { background: #16a34a; }
+  .dot.new { background: #dc2626; }
+  .dot.unknown { background: #555; }
+  .dot.done { background: #16a34a; box-shadow: 0 0 6px #16a34a; }
+  #importBar { position: fixed; left: 0; right: 0; bottom: 0; background: #181818; border-top: 1px solid #333;
+               padding: 10px 12px; display: flex; gap: 10px; align-items: center; }
+  #importBar button { flex: 1; font-size: 1.05rem; padding: 12px; }
+  #logincard { background: #1b1b1b; border: 1px solid #333; border-radius: 10px; padding: 14px; margin: 10px 0; }
+  #ucode { font-size: 1.6rem; letter-spacing: .2em; font-weight: 700; color: #ffd76a; text-align: center; margin: 8px 0; }
+  #log { background: #000; color: #7f7; font-family: monospace; font-size: .7rem; padding: 8px; border-radius: 6px;
+         max-height: 38vh; overflow-y: auto; white-space: pre-wrap; }
+  summary { cursor: pointer; color: #888; margin-top: 14px; }
+  select { background: #222; color: #eee; border: 1px solid #444; border-radius: 8px; padding: 8px; font-size: .9rem; }
+  a { color: #6ab7ff; }
 </style>
 </head>
 <body>
-<h1>HiDock Sync — POC <small style="color:#666">v0.3</small></h1>
+<h1>HiDock Sync <small style="color:#666">v1.0</small></h1>
 
 <div id="toolbar">
-  <button id="btnConnect" class="primary">1. Connect HiDock</button>
-  <button id="btnScan" class="primary" disabled>2. Scan files</button>
-  <button id="btnSkip" class="warn" disabled>ข้ามไฟล์ที่ค้าง</button>
+  <button id="btnConnect" class="primary">🔌 Connect HiDock</button>
+  <button id="btnLogin" class="primary">🔑 Login Microsoft</button>
+  <span id="acctChip" class="chip" style="display:none"></span>
 </div>
-<div id="status">ยังไม่ได้เชื่อมต่อ — เสียบ HiDock ผ่าน OTG แล้วกด Connect</div>
+
+<div id="logincard" style="display:none">
+  <div>1) กดปุ่ม copy โค้ดด้านล่าง → 2) เปิดหน้า Microsoft → 3) วางโค้ด + login บัญชี OneDrive ของคุณ</div>
+  <div id="ucode">-----</div>
+  <div style="display:flex; gap:8px">
+    <button id="btnCopyCode" style="flex:1">📋 Copy โค้ด</button>
+    <button id="btnOpenVerify" class="primary" style="flex:1">เปิดหน้า Microsoft</button>
+  </div>
+  <div style="color:#888; font-size:.8rem; margin-top:8px">รอ login อยู่... กลับมาหน้านี้หลัง login เสร็จ</div>
+</div>
+
+<div id="row2" style="display:none">
+  <button id="btnScan">🔄 Scan</button>
+  <button id="btnCheck" disabled>☁️ เช็คสถานะ OneDrive</button>
+  <select id="filterSel">
+    <option value="recent">30 วันล่าสุด</option>
+    <option value="new">เฉพาะ New</option>
+    <option value="all">ทั้งหมด</option>
+  </select>
+  <span id="summary" style="font-size:.85rem; color:#aaa"></span>
+</div>
+
+<div id="status">เสียบ HiDock ผ่าน OTG แล้วกด Connect — Login Microsoft ทำก่อน/หลังก็ได้</div>
 <div id="progress"></div>
 <div id="fileList"></div>
 
-<div id="logwrap">
-  <details open>
-    <summary>Log (debug)</summary>
-    <div id="log"></div>
-  </details>
+<details>
+  <summary>Log (debug)</summary>
+  <div id="log"></div>
+</details>
+
+<div id="importBar" style="display:none">
+  <button id="btnImport" class="green" disabled>Import 0 ไฟล์ → OneDrive</button>
+  <button id="btnSkip" class="warn" style="flex:0 0 auto; display:none">ข้าม</button>
 </div>
 
 <script>
 'use strict';
 
-// ---- Device table (handoff §2.1, §2.3) ----
+// ================= config =================
+const VERSION = 'v1.0';
+const WORKER_URL = 'https://hidock-auth.hidock-napanuwat.workers.dev';
+const CLIENT_ID = '14d82eec-204b-4c2f-b7e8-296a70dab67e';               // MS Graph Command Line Tools (public client)
+const SCOPE = 'Files.ReadWrite User.Read offline_access';
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const P1_ROOT = '/00 Daily Records/_P1';       // path ใต้ OneDrive root
+const CHECK_DAYS = 30;                          // เช็คสถานะ/แสดงผล default กี่วันล่าสุด
+const CHUNK = 9830400;                          // 30 × 320KiB — upload session chunk
 const DEVICES = {
-  0x10D6: { name: 'HiDock Original', listCmd: '123400040000000e00000000' },
-  0x3887: { name: 'P1 Mini',         listCmd: '123400040000000900000000' },
+  0x10D6: { name: 'HiDock Original', listCmd: '123400040000000e00000000', bytesPerSec: 16000 },
+  0x3887: { name: 'P1 Mini',         listCmd: '123400040000000900000000', bytesPerSec: 12000 },
 };
 
-let device = null, epOut = null, epIn = null, listCmd = null;
-let skipRequested = false;
+// ================= state =================
+let device = null, epOut = null, epIn = null, devInfo = null;
+let allFiles = [];            // {name,nameBytes,size,date,time,key,checked,status,imported}
+let skipRequested = false, isImporting = false;
+let existingByDate = {};      // date → [names on OneDrive]
+const folderEnsured = new Set();
 
 const $ = id => document.getElementById(id);
-const logEl = $('log');
+function log(m) { const el = $('log'); el.textContent += `[${new Date().toTimeString().slice(0,8)}] ${m}\n`; el.scrollTop = el.scrollHeight; }
+function setStatus(m) { $('status').textContent = m; log('STATUS: ' + m); }
+function setProgress(m) { $('progress').textContent = m; }
+const fmtMB = b => (b / 1048576).toFixed(1) + ' MB';
+function hexToBytes(h) { const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; }
 
-function log(msg) {
-  const t = new Date().toTimeString().slice(0, 8);
-  logEl.textContent += `[${t}] ${msg}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-function setStatus(msg) { $('status').textContent = msg; log('STATUS: ' + msg); }
-function setProgress(msg) { $('progress').textContent = msg; }
-
-function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
-  return out;
-}
-const fmtMB = b => (b / 1048576).toFixed(2) + ' MB';
-const estMins = b => Math.round(b / 16000 / 60);  // 128kbps CBR → sec ≈ bytes/16000
-
-// ---- Connect (handoff §2.2) ----
+// ================= USB (จาก POC v0.3 — ห้ามแก้ offset) =================
 async function connect() {
   try {
-    if (!navigator.usb) { setStatus('❌ Browser นี้ไม่มี WebUSB — ต้องใช้ Chrome/Edge'); return; }
-    device = await navigator.usb.requestDevice({
-      filters: [{ vendorId: 0x10D6 }, { vendorId: 0x3887 }],
-    });
-    const info = DEVICES[device.vendorId];
-    listCmd = hexToBytes(info.listCmd);
-    log(`เลือกอุปกรณ์: ${info.name} (vendor 0x${device.vendorId.toString(16)}) product=${device.productName || '?'}`);
-
+    if (!navigator.usb) { setStatus('❌ Browser นี้ไม่มี WebUSB — ใช้ Chrome'); return; }
+    device = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x10D6 }, { vendorId: 0x3887 }] });
+    devInfo = DEVICES[device.vendorId];
+    log(`อุปกรณ์: ${devInfo.name} (0x${device.vendorId.toString(16)})`);
     await device.open();
     if (device.configuration === null) await device.selectConfiguration(1);
-    log(`configuration = ${device.configuration.configurationValue}`);
-
-    // claim ทุก interface ที่ claim ได้ (บางตัว fail — ข้าม)
-    const endpoints = [];
+    const eps = [];
     for (const iface of device.configuration.interfaces) {
       try {
         await device.claimInterface(iface.interfaceNumber);
-        const alt = iface.alternate || iface.alternates[0];
-        for (const ep of alt.endpoints) {
-          endpoints.push(ep);
-          log(`  iface ${iface.interfaceNumber}: ep ${ep.endpointNumber} ${ep.direction} (${ep.type})`);
-        }
-      } catch (e) {
-        log(`  iface ${iface.interfaceNumber}: claim ไม่ได้ (${e.message}) — ข้าม`);
-      }
+        eps.push(...(iface.alternate || iface.alternates[0]).endpoints);
+      } catch (e) { log(`iface ${iface.interfaceNumber}: claim ไม่ได้ — ข้าม`); }
     }
-    // epOut = OUT ตัวแรก, epIn = IN ตัวสุดท้าย (ลำดับนี้ผ่านการลองมาแล้ว)
-    epOut = endpoints.find(e => e.direction === 'out');
-    epIn  = [...endpoints].reverse().find(e => e.direction === 'in');
-    if (!epOut || !epIn) { setStatus('❌ หา endpoints ไม่เจอ — ดู log'); return; }
-    log(`ใช้ epOut=${epOut.endpointNumber}, epIn=${epIn.endpointNumber}`);
-
-    setStatus(`✅ เชื่อมต่อ ${info.name} แล้ว — กด Scan files`);
-    $('btnScan').disabled = false;
-  } catch (e) {
-    setStatus('❌ Connect ล้มเหลว: ' + e.message);
-  }
+    epOut = eps.find(e => e.direction === 'out');
+    epIn = [...eps].reverse().find(e => e.direction === 'in');
+    if (!epOut || !epIn) { setStatus('❌ หา endpoints ไม่เจอ'); return; }
+    log(`epOut=${epOut.endpointNumber} epIn=${epIn.endpointNumber}`);
+    setStatus(`✅ เชื่อมต่อ ${devInfo.name} แล้ว — กำลัง scan...`);
+    $('row2').style.display = 'flex';
+    $('importBar').style.display = 'flex';
+    await scanFiles();
+  } catch (e) { setStatus('❌ Connect: ' + e.message); }
 }
 
-// ---- List files (handoff §2.3) ----
 async function scanFiles() {
   try {
-    $('btnScan').disabled = true;
     setStatus('กำลังสแกน directory...');
-    await device.transferOut(epOut.endpointNumber, listCmd);
+    await device.transferOut(epOut.endpointNumber, hexToBytes(devInfo.listCmd));
     const res = await device.transferIn(epIn.endpointNumber, 65536);
     const bytes = new Uint8Array(res.data.buffer);
-    log(`ได้ directory blob ${bytes.length} bytes`);
-    const files = parseDirectory(bytes);
-    setStatus(`✅ พบ ${files.length} ไฟล์`);
-    renderFiles(files);
-  } catch (e) {
-    setStatus('❌ Scan ล้มเหลว: ' + e.message);
-  } finally {
-    $('btnScan').disabled = false;
-  }
+    log(`directory blob ${bytes.length} bytes`);
+    allFiles = parseDirectory(bytes);
+    allFiles.sort((a, b) => b.key.localeCompare(a.key));   // ล่าสุดก่อน
+    setStatus(`✅ พบ ${allFiles.length} ไฟล์บนเครื่อง`);
+    renderTable();
+    if (getAuth()) { $('btnCheck').disabled = false; checkOneDrive(); }
+  } catch (e) { setStatus('❌ Scan: ' + e.message); }
 }
 
 function parseDirectory(bytes) {
@@ -149,11 +171,11 @@ function parseDirectory(bytes) {
         const nameBytes = bytes.slice(i + 4, i + 4 + nameLen - 1);
         const name = String.fromCharCode(...nameBytes);
         if (name.includes('.hd')) {
-          // size อยู่ที่ i+4+nameLen (มี 1 byte คั่นหลังชื่อ) — ตรงตามต้นฉบับ hidock.html
+          // size อยู่ที่ i+4+nameLen (มี 1 byte คั่นหลังชื่อ) — ตามต้นฉบับ ห้ามแก้
           const p = i + 4 + nameLen;
           const size = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
-          files.push({ name, nameBytes, size });
-          log(`  พบ: ${name} (${size} bytes)`);
+          const dt = parseDeviceName(name);
+          if (dt) files.push({ name, nameBytes, size, ...dt, checked: false, status: 'unknown', imported: false });
           i += nameLen + 10;
           continue;
         }
@@ -164,92 +186,48 @@ function parseDirectory(bytes) {
   return files;
 }
 
-// ชื่อไฟล์บนเครื่อง: 2026May13-145019.hda (อาจมี -RecNN)
 function parseDeviceName(name) {
   const m = name.match(/^(\d{4})([A-Za-z]{3})(\d{2})-(\d{2})(\d{2})(\d{2})/);
   if (!m) return null;
-  const months = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
+  const months = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
   const mo = months[m[2]];
   if (!mo) return null;
-  return { date: `${m[1]}-${String(mo).padStart(2, '0')}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}` };
+  const mm = String(mo).padStart(2, '0');
+  return { date: `${m[1]}-${mm}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}`, key: `${m[1]}${mm}${m[3]}_${m[4]}${m[5]}${m[6]}` };
 }
 
-function renderFiles(files) {
-  const rows = files.map((f, idx) => {
-    const dt = parseDeviceName(f.name);
-    return `<tr>
-      <td>${f.name}</td>
-      <td class="num">${dt ? dt.date + ' ' + dt.time : '?'}</td>
-      <td class="num">${fmtMB(f.size)}</td>
-      <td class="num">~${estMins(f.size)} นาที</td>
-      <td><button onclick="downloadFile(${idx})" id="dl${idx}">⬇</button></td>
-    </tr>`;
-  }).join('');
-  $('fileList').innerHTML = files.length
-    ? `<table><tr><th>ไฟล์</th><th>วันเวลา</th><th>ขนาด</th><th>ยาว</th><th></th></tr>${rows}</table>`
-    : '<p>ไม่พบไฟล์บนเครื่อง</p>';
-  window._files = files;
-}
-
-// ---- Download + strip HDA (handoff §2.4–2.5) ----
-async function downloadFile(idx) {
-  const f = window._files[idx];
-  const btn = $('dl' + idx);
-  btn.disabled = true;
-  $('btnSkip').disabled = false;
-  skipRequested = false;
-  try {
-    log(`เริ่มดาวน์โหลด ${f.name} (คาดหวัง ${f.size} bytes)`);
-    // command: 12 34 00 05 + padding + [11]=len + filename (ใช้ bytes ดิบจาก directory)
-    const cmd = new Uint8Array(12 + f.nameBytes.length);
-    cmd.set([0x12, 0x34, 0x00, 0x05]);
-    cmd[11] = f.nameBytes.length;
-    cmd.set(f.nameBytes, 12);
-    await device.transferOut(epOut.endpointNumber, cmd);
-
-    const chunks = [];
-    let total = 0;
-    while (total < f.size) {
-      if (skipRequested) { log('ผู้ใช้สั่งข้ามไฟล์'); break; }
-      let res;
-      try { res = await device.transferIn(epIn.endpointNumber, 65536); }
-      catch (e) { log('read error: ' + e.message + ' — หยุด'); break; }
-      if (!res.data || res.data.byteLength === 0) { log('ได้ chunk ว่าง — หยุด'); break; }
-      chunks.push(new Uint8Array(res.data.buffer));
-      total += res.data.byteLength;
-      setProgress(`${f.name}\n${fmtMB(total)} / ${fmtMB(f.size)} (${Math.floor(total / f.size * 100)}%)`);
-    }
-    log(`รับมาทั้งหมด ${total} bytes`);
-    if (total === 0) { setStatus('❌ ไม่ได้ข้อมูลเลย'); return; }
-
-    const raw = new Uint8Array(total);
-    let off = 0;
-    for (const c of chunks) { raw.set(c, off); off += c.length; }
-    const mp3 = stripHDA(raw);
-    log(`strip HDA แล้วเหลือ ${mp3.length} bytes`);
-
-    const outName = f.name.replace(/\.hda?$/i, '') + '.mp3';
-    saveBlob(new Blob([mp3], { type: 'audio/mpeg' }), outName);
-    setStatus(`✅ ดาวน์โหลด ${outName} สำเร็จ (เช็คใน Downloads แล้วลองเปิดฟัง)`);
-    setProgress('');
-  } catch (e) {
-    setStatus('❌ Download ล้มเหลว: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    $('btnSkip').disabled = true;
+async function downloadFromDevice(f, progressCb) {
+  const cmd = new Uint8Array(12 + f.nameBytes.length);
+  cmd.set([0x12, 0x34, 0x00, 0x05]);
+  cmd[11] = f.nameBytes.length;
+  cmd.set(f.nameBytes, 12);
+  await device.transferOut(epOut.endpointNumber, cmd);
+  const chunks = [];
+  let total = 0;
+  while (total < f.size) {
+    if (skipRequested) throw new Error('skipped');
+    let res;
+    try { res = await device.transferIn(epIn.endpointNumber, 65536); }
+    catch (e) { log('read error: ' + e.message); break; }
+    if (!res.data || res.data.byteLength === 0) { log('chunk ว่าง — หยุด'); break; }
+    chunks.push(new Uint8Array(res.data.buffer));
+    total += res.data.byteLength;
+    progressCb(total);
   }
+  const raw = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { raw.set(c, off); off += c.length; }
+  return raw;
 }
 
 function stripHDA(raw) {
-  if (raw[0] !== 0x12 || raw[1] !== 0x34) return raw;  // ไม่มี HDA header — เป็น mp3 ตรง ๆ
+  if (raw.length < 2 || raw[0] !== 0x12 || raw[1] !== 0x34) return raw;
   const parts = [];
   let offset = 0, total = 0;
   while (offset + 12 <= raw.length && raw[offset] === 0x12 && raw[offset + 1] === 0x34) {
     const dataLen = (raw[offset + 10] << 8) | raw[offset + 11];
-    const chunk = raw.subarray(offset + 12, offset + 12 + dataLen);
-    parts.push(chunk);
-    total += chunk.length;
-    offset += 12 + dataLen;
+    const chunk = raw.subarray(offset + 12, Math.min(offset + 12 + dataLen, raw.length));
+    parts.push(chunk); total += chunk.length; offset += 12 + dataLen;
   }
   const out = new Uint8Array(total);
   let o = 0;
@@ -257,20 +235,275 @@ function stripHDA(raw) {
   return out;
 }
 
-function saveBlob(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+// duration จริงจาก mp3 metadata (เบา ไม่ decode ทั้งไฟล์); fallback = สูตรตามรุ่นเครื่อง
+function getDurationMins(blob, sizeBytes) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio();
+    const fallback = () => resolve(Math.max(1, Math.round(sizeBytes / devInfo.bytesPerSec / 60)));
+    const timer = setTimeout(() => { URL.revokeObjectURL(url); fallback(); }, 8000);
+    a.addEventListener('loadedmetadata', () => {
+      clearTimeout(timer); URL.revokeObjectURL(url);
+      if (isFinite(a.duration) && a.duration > 0) resolve(Math.max(1, Math.round(a.duration / 60)));
+      else fallback();
+    });
+    a.addEventListener('error', () => { clearTimeout(timer); URL.revokeObjectURL(url); fallback(); });
+    a.preload = 'metadata';
+    a.src = url;
+  });
+}
+
+// ================= Auth (device code ผ่าน Worker) =================
+function getAuth() { try { return JSON.parse(localStorage.getItem('hidock_auth')); } catch { return null; } }
+function saveAuth(t) {
+  localStorage.setItem('hidock_auth', JSON.stringify({
+    access_token: t.access_token,
+    refresh_token: t.refresh_token || (getAuth() || {}).refresh_token,
+    expires_at: Date.now() + (t.expires_in - 300) * 1000,
+  }));
+}
+
+async function login() {
+  try {
+    $('btnLogin').disabled = true;
+    const r = await fetch(WORKER_URL + '/devicecode', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: CLIENT_ID, scope: SCOPE }),
+    });
+    const dc = await r.json();
+    if (!dc.device_code) throw new Error(dc.error_description || 'devicecode failed');
+    $('logincard').style.display = 'block';
+    $('ucode').textContent = dc.user_code;
+    $('btnCopyCode').onclick = () => navigator.clipboard.writeText(dc.user_code);
+    $('btnOpenVerify').onclick = () => window.open(dc.verification_uri, '_blank');
+    log(`device code: ${dc.user_code} — รอ user login`);
+    const interval = (dc.interval || 5) * 1000;
+    const deadline = Date.now() + dc.expires_in * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(s => setTimeout(s, interval));
+      const tr = await fetch(WORKER_URL + '/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: CLIENT_ID, device_code: dc.device_code }),
+      });
+      const tok = await tr.json();
+      if (tok.access_token) { saveAuth(tok); $('logincard').style.display = 'none'; await afterLogin(); return; }
+      if (tok.error !== 'authorization_pending' && tok.error !== 'slow_down') throw new Error(tok.error_description || tok.error);
+    }
+    throw new Error('code หมดอายุ — ลองใหม่');
+  } catch (e) {
+    setStatus('❌ Login: ' + e.message);
+    $('logincard').style.display = 'none';
+  } finally { $('btnLogin').disabled = false; }
+}
+
+async function refreshIfNeeded() {
+  const a = getAuth();
+  if (!a) throw new Error('ยังไม่ได้ login');
+  if (Date.now() < a.expires_at) return a.access_token;
+  log('access token หมดอายุ — refresh...');
+  const r = await fetch(WORKER_URL + '/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', client_id: CLIENT_ID, refresh_token: a.refresh_token, scope: SCOPE }),
+  });
+  const tok = await r.json();
+  if (!tok.access_token) { localStorage.removeItem('hidock_auth'); showLoginState(); throw new Error('refresh ไม่ผ่าน — login ใหม่'); }
+  saveAuth(tok);
+  return tok.access_token;
+}
+
+async function graphFetch(path, opts = {}) {
+  const token = await refreshIfNeeded();
+  const r = await fetch(GRAPH + path, { ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+  return r;
+}
+
+async function afterLogin() {
+  const r = await graphFetch('/me');
+  const me = await r.json();
+  log(`login เป็น: ${me.displayName} (${me.userPrincipalName || me.mail || ''})`);
+  showLoginState(me);
+  if (allFiles.length) { $('btnCheck').disabled = false; checkOneDrive(); }
+}
+
+function showLoginState(me) {
+  const a = getAuth();
+  $('btnLogin').style.display = a ? 'none' : '';
+  const chip = $('acctChip');
+  if (a) { chip.style.display = ''; chip.className = 'chip ok'; chip.textContent = me ? `☁️ ${me.userPrincipalName || me.displayName}` : '☁️ logged in'; }
+  else { chip.style.display = 'none'; }
+}
+
+// ================= OneDrive status check =================
+function recentDates() {
+  return [...new Set(allFiles.map(f => f.date))].sort().reverse().slice(0, CHECK_DAYS);
+}
+
+async function checkOneDrive() {
+  try {
+    $('btnCheck').disabled = true;
+    const dates = recentDates();
+    setStatus(`เช็คสถานะ OneDrive (${dates.length} วันล่าสุด)...`);
+    for (const d of dates) {
+      const r = await graphFetch(`/me/drive/root:${encodeURI(P1_ROOT)}/${d}:/children?$select=name&$top=999`);
+      if (r.status === 404) { existingByDate[d] = []; continue; }
+      const j = await r.json();
+      existingByDate[d] = (j.value || []).map(x => x.name);
+    }
+    let newCount = 0;
+    for (const f of allFiles) {
+      if (!(f.date in existingByDate)) continue;   // นอกช่วงเช็ค
+      const hit = existingByDate[f.date].some(n => n.startsWith(f.key));
+      f.status = hit ? 'local' : 'new';
+      if (!hit) { f.checked = true; newCount++; }
+      else f.checked = false;
+    }
+    setStatus(`✅ เช็คแล้ว ${dates.length} วัน — พบไฟล์ใหม่ ${newCount} ไฟล์ (ติ๊กให้แล้ว)`);
+    renderTable();
+  } catch (e) { setStatus('❌ เช็คสถานะ: ' + e.message); }
+  finally { $('btnCheck').disabled = false; }
+}
+
+// ================= Import (download → upload) =================
+async function ensureFolder(date) {
+  if (folderEnsured.has(date)) return;
+  const r = await graphFetch(`/me/drive/root:${encodeURI(P1_ROOT)}:/children`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: date, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
+  });
+  if (!r.ok && r.status !== 409) throw new Error(`สร้างโฟลเดอร์ ${date} ไม่ได้ (HTTP ${r.status})`);
+  folderEnsured.add(date);
+}
+
+async function uploadToOneDrive(f, mp3, outName, progressCb) {
+  await ensureFolder(f.date);
+  const path = `${P1_ROOT}/${f.date}/${outName}`;
+  const sess = await graphFetch(`/me/drive/root:${encodeURI(path)}:/createUploadSession`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'fail' } }),
+  });
+  if (!sess.ok) {
+    const j = await sess.json().catch(() => ({}));
+    if (sess.status === 409 || (j.error && j.error.code === 'nameAlreadyExists')) { log(`${outName} มีอยู่แล้ว — skip`); return 'exists'; }
+    throw new Error(`createUploadSession HTTP ${sess.status}`);
+  }
+  const { uploadUrl } = await sess.json();
+  for (let start = 0; start < mp3.length; start += CHUNK) {
+    if (skipRequested) throw new Error('skipped');
+    const end = Math.min(start + CHUNK, mp3.length);
+    const r = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes ${start}-${end - 1}/${mp3.length}` },
+      body: mp3.subarray(start, end),
+    });
+    if (!r.ok && r.status !== 202) throw new Error(`upload chunk HTTP ${r.status}`);
+    progressCb(end);
+  }
+  return 'uploaded';
+}
+
+async function importSelected() {
+  const queue = allFiles.filter(f => f.checked && !f.imported);
+  if (!queue.length || isImporting) return;
+  if (!getAuth()) { setStatus('❌ ต้อง Login Microsoft ก่อน'); return; }
+  isImporting = true;
+  $('btnImport').disabled = true;
+  $('btnSkip').style.display = '';
+  let done = 0, failed = 0;
+  log(`===== เริ่ม import ${queue.length} ไฟล์ =====`);
+  for (const f of queue) {
+    skipRequested = false;
+    const label = `[${done + failed + 1}/${queue.length}] ${f.name}`;
+    try {
+      setProgress(`${label}\n⬇ ดาวน์โหลดจาก HiDock...`);
+      const raw = await downloadFromDevice(f, n => setProgress(`${label}\n⬇ ${fmtMB(n)} / ${fmtMB(f.size)} (${Math.floor(n / f.size * 100)}%)`));
+      if (raw.length === 0) throw new Error('ไม่ได้ข้อมูล');
+      const mp3 = stripHDA(raw);
+      const mins = await getDurationMins(new Blob([mp3], { type: 'audio/mpeg' }), mp3.length);
+      const outName = `${f.key}(${mins}mins).mp3`;
+      log(`${f.name} → ${outName} (${fmtMB(mp3.length)})`);
+      setProgress(`${label}\n⬆ upload ${outName}...`);
+      await uploadToOneDrive(f, mp3, outName, n => setProgress(`${label}\n⬆ ${fmtMB(n)} / ${fmtMB(mp3.length)} (${Math.floor(n / mp3.length * 100)}%)`));
+      f.imported = true; f.status = 'local'; f.checked = false;
+      done++;
+      renderTable();
+    } catch (e) {
+      failed++;
+      log(`❌ ${f.name}: ${e.message}`);
+    }
+    await new Promise(s => setTimeout(s, 1500));   // เว้นช่วงระหว่างไฟล์ (ตาม desktop)
+  }
+  setProgress('');
+  setStatus(`🏁 เสร็จ: สำเร็จ ${done} / ล้มเหลว-ข้าม ${failed}`);
+  isImporting = false;
+  $('btnSkip').style.display = 'none';
+  updateSummary();
+}
+
+// ================= UI =================
+function visibleFiles() {
+  const mode = $('filterSel').value;
+  if (mode === 'new') return allFiles.filter(f => f.status === 'new');
+  if (mode === 'all') return allFiles;
+  const dates = new Set(recentDates());
+  return allFiles.filter(f => dates.has(f.date));
+}
+
+function renderTable() {
+  const files = visibleFiles();
+  const byDate = {};
+  for (const f of files) (byDate[f.date] = byDate[f.date] || []).push(f);
+  const dates = Object.keys(byDate).sort().reverse();
+  let html = '<table>';
+  for (const d of dates) {
+    const idxs = byDate[d].map(f => allFiles.indexOf(f));
+    const allChecked = byDate[d].every(f => f.checked || f.status === 'local');
+    html += `<tr class="dayrow"><td colspan="5">
+      <input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleDay('${d}', this.checked)">
+      ${d} <span style="color:#888">(${byDate[d].length} ไฟล์)</span></td></tr>`;
+    for (const f of byDate[d]) {
+      const i = allFiles.indexOf(f);
+      const dot = f.imported ? 'done' : f.status;
+      const est = Math.round(f.size / devInfo.bytesPerSec / 60);
+      html += `<tr>
+        <td><input type="checkbox" ${f.checked ? 'checked' : ''} ${f.status === 'local' ? 'disabled' : ''} onchange="toggleFile(${i}, this.checked)"></td>
+        <td><span class="dot ${dot}" title="${f.status}"></span></td>
+        <td>${f.time}</td>
+        <td class="num">${fmtMB(f.size)}</td>
+        <td class="num">~${est} นาที</td>
+      </tr>`;
+    }
+  }
+  html += '</table>';
+  $('fileList').innerHTML = files.length ? html : '<p style="color:#888">ไม่มีไฟล์ใน filter นี้</p>';
+  updateSummary();
+}
+
+window.toggleFile = (i, v) => { allFiles[i].checked = v; updateSummary(); };
+window.toggleDay = (d, v) => {
+  for (const f of allFiles) if (f.date === d && f.status !== 'local') f.checked = v;
+  renderTable();
+};
+
+function updateSummary() {
+  const sel = allFiles.filter(f => f.checked && !f.imported);
+  const mb = sel.reduce((s, f) => s + f.size, 0);
+  $('summary').textContent = sel.length ? `เลือก ${sel.length} ไฟล์ (${fmtMB(mb)})` : '';
+  $('btnImport').textContent = `Import ${sel.length} ไฟล์ → OneDrive`;
+  $('btnImport').disabled = !sel.length || isImporting;
 }
 
 $('btnConnect').onclick = connect;
+$('btnLogin').onclick = login;
 $('btnScan').onclick = scanFiles;
+$('btnCheck').onclick = checkOneDrive;
+$('btnImport').onclick = importSelected;
 $('btnSkip').onclick = () => { skipRequested = true; };
-log('POC v0.3 loaded');
+$('filterSel').onchange = renderTable;
+
+log(`HiDock Sync ${VERSION} loaded`);
 log(`WebUSB available: ${!!navigator.usb}`);
+showLoginState();
+if (getAuth()) afterLogin().catch(e => log('restore session: ' + e.message));
 </script>
 </body>
 </html>
