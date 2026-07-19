@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<!-- HiDock Sync Android — POC v0.1
+     พิสูจน์: WebUSB connect + list files + download 1 ไฟล์ + strip HDA → .mp3
+     Protocol อ้างอิงจาก Handoff_hidock_mobile.md section 2 -->
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiDock Sync — POC</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; padding: 12px; }
+  h1 { font-size: 1.2rem; margin: 4px 0 12px; }
+  button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer; }
+  button:disabled { opacity: .4; }
+  .primary { background: #2563eb; color: #fff; }
+  .warn { background: #b45309; color: #fff; }
+  #toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  #status { margin: 8px 0; font-size: .95rem; color: #9cf; min-height: 1.2em; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th, td { border-bottom: 1px solid #333; padding: 6px 4px; text-align: left; }
+  td.num { text-align: right; white-space: nowrap; }
+  #progress { margin: 8px 0; font-size: .9rem; color: #fc9; white-space: pre-line; }
+  #logwrap { margin-top: 14px; }
+  #log { background: #000; color: #7f7; font-family: monospace; font-size: .72rem;
+         padding: 8px; border-radius: 6px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; }
+  summary { cursor: pointer; color: #888; }
+</style>
+</head>
+<body>
+<h1>HiDock Sync — POC <small style="color:#666">v0.1</small></h1>
+
+<div id="toolbar">
+  <button id="btnConnect" class="primary">1. Connect HiDock</button>
+  <button id="btnScan" class="primary" disabled>2. Scan files</button>
+  <button id="btnSkip" class="warn" disabled>ข้ามไฟล์ที่ค้าง</button>
+</div>
+<div id="status">ยังไม่ได้เชื่อมต่อ — เสียบ HiDock ผ่าน OTG แล้วกด Connect</div>
+<div id="progress"></div>
+<div id="fileList"></div>
+
+<div id="logwrap">
+  <details open>
+    <summary>Log (debug)</summary>
+    <div id="log"></div>
+  </details>
+</div>
+
+<script>
+'use strict';
+
+// ---- Device table (handoff §2.1, §2.3) ----
+const DEVICES = {
+  0x10D6: { name: 'HiDock Original', listCmd: '123400040000000e00000000' },
+  0x3887: { name: 'P1 Mini',         listCmd: '123400040000000900000000' },
+};
+
+let device = null, epOut = null, epIn = null, listCmd = null;
+let skipRequested = false;
+
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+
+function log(msg) {
+  const t = new Date().toTimeString().slice(0, 8);
+  logEl.textContent += `[${t}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setStatus(msg) { $('status').textContent = msg; log('STATUS: ' + msg); }
+function setProgress(msg) { $('progress').textContent = msg; }
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+const fmtMB = b => (b / 1048576).toFixed(2) + ' MB';
+const estMins = b => Math.round(b / 16000 / 60);  // 128kbps CBR → sec ≈ bytes/16000
+
+// ---- Connect (handoff §2.2) ----
+async function connect() {
+  try {
+    if (!navigator.usb) { setStatus('❌ Browser นี้ไม่มี WebUSB — ต้องใช้ Chrome/Edge'); return; }
+    device = await navigator.usb.requestDevice({
+      filters: [{ vendorId: 0x10D6 }, { vendorId: 0x3887 }],
+    });
+    const info = DEVICES[device.vendorId];
+    listCmd = hexToBytes(info.listCmd);
+    log(`เลือกอุปกรณ์: ${info.name} (vendor 0x${device.vendorId.toString(16)}) product=${device.productName || '?'}`);
+
+    await device.open();
+    if (device.configuration === null) await device.selectConfiguration(1);
+    log(`configuration = ${device.configuration.configurationValue}`);
+
+    // claim ทุก interface ที่ claim ได้ (บางตัว fail — ข้าม)
+    const endpoints = [];
+    for (const iface of device.configuration.interfaces) {
+      try {
+        await device.claimInterface(iface.interfaceNumber);
+        const alt = iface.alternate || iface.alternates[0];
+        for (const ep of alt.endpoints) {
+          endpoints.push(ep);
+          log(`  iface ${iface.interfaceNumber}: ep ${ep.endpointNumber} ${ep.direction} (${ep.type})`);
+        }
+      } catch (e) {
+        log(`  iface ${iface.interfaceNumber}: claim ไม่ได้ (${e.message}) — ข้าม`);
+      }
+    }
+    // epOut = OUT ตัวแรก, epIn = IN ตัวสุดท้าย (ลำดับนี้ผ่านการลองมาแล้ว)
+    epOut = endpoints.find(e => e.direction === 'out');
+    epIn  = [...endpoints].reverse().find(e => e.direction === 'in');
+    if (!epOut || !epIn) { setStatus('❌ หา endpoints ไม่เจอ — ดู log'); return; }
+    log(`ใช้ epOut=${epOut.endpointNumber}, epIn=${epIn.endpointNumber}`);
+
+    setStatus(`✅ เชื่อมต่อ ${info.name} แล้ว — กด Scan files`);
+    $('btnScan').disabled = false;
+  } catch (e) {
+    setStatus('❌ Connect ล้มเหลว: ' + e.message);
+  }
+}
+
+// ---- List files (handoff §2.3) ----
+async function scanFiles() {
+  try {
+    $('btnScan').disabled = true;
+    setStatus('กำลังสแกน directory...');
+    await device.transferOut(epOut.endpointNumber, listCmd);
+    const res = await device.transferIn(epIn.endpointNumber, 65536);
+    const bytes = new Uint8Array(res.data.buffer);
+    log(`ได้ directory blob ${bytes.length} bytes`);
+    const files = parseDirectory(bytes);
+    setStatus(`✅ พบ ${files.length} ไฟล์`);
+    renderFiles(files);
+  } catch (e) {
+    setStatus('❌ Scan ล้มเหลว: ' + e.message);
+  } finally {
+    $('btnScan').disabled = false;
+  }
+}
+
+function parseDirectory(bytes) {
+  const files = [];
+  let i = 0;
+  while (i < bytes.length - 8) {
+    if ((bytes[i] === 0x04 || bytes[i] === 0x05) && bytes[i + 1] === 0x00 && bytes[i + 2] === 0x00) {
+      const nameLen = bytes[i + 3];
+      if (nameLen > 10 && nameLen < 50) {
+        let name = '';
+        for (let j = 0; j < nameLen - 1; j++) name += String.fromCharCode(bytes[i + 4 + j]);
+        if (/\.hda?$/i.test(name.trim())) {
+          const p = i + 4 + (nameLen - 1);
+          const size = (bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3];
+          files.push({ name: name.trim(), size: size >>> 0 });
+          log(`  พบ: ${name.trim()} (${size >>> 0} bytes)`);
+          i += nameLen + 10;
+          continue;
+        }
+      }
+    }
+    i++;
+  }
+  return files;
+}
+
+// ชื่อไฟล์บนเครื่อง: 2026May13-145019.hda (อาจมี -RecNN)
+function parseDeviceName(name) {
+  const m = name.match(/^(\d{4})([A-Za-z]{3})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  if (!m) return null;
+  const months = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
+  const mo = months[m[2]];
+  if (!mo) return null;
+  return { date: `${m[1]}-${String(mo).padStart(2, '0')}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}` };
+}
+
+function renderFiles(files) {
+  const rows = files.map((f, idx) => {
+    const dt = parseDeviceName(f.name);
+    return `<tr>
+      <td>${f.name}</td>
+      <td class="num">${dt ? dt.date + ' ' + dt.time : '?'}</td>
+      <td class="num">${fmtMB(f.size)}</td>
+      <td class="num">~${estMins(f.size)} นาที</td>
+      <td><button onclick="downloadFile(${idx})" id="dl${idx}">⬇</button></td>
+    </tr>`;
+  }).join('');
+  $('fileList').innerHTML = files.length
+    ? `<table><tr><th>ไฟล์</th><th>วันเวลา</th><th>ขนาด</th><th>ยาว</th><th></th></tr>${rows}</table>`
+    : '<p>ไม่พบไฟล์บนเครื่อง</p>';
+  window._files = files;
+}
+
+// ---- Download + strip HDA (handoff §2.4–2.5) ----
+async function downloadFile(idx) {
+  const f = window._files[idx];
+  const btn = $('dl' + idx);
+  btn.disabled = true;
+  $('btnSkip').disabled = false;
+  skipRequested = false;
+  try {
+    log(`เริ่มดาวน์โหลด ${f.name} (คาดหวัง ${f.size} bytes)`);
+    // command: 12 34 00 05 + padding + [11]=nameLen + filename
+    const cmd = new Uint8Array(12 + f.name.length);
+    cmd.set([0x12, 0x34, 0x00, 0x05]);
+    cmd[11] = f.name.length;
+    for (let i = 0; i < f.name.length; i++) cmd[12 + i] = f.name.charCodeAt(i);
+    await device.transferOut(epOut.endpointNumber, cmd);
+
+    const chunks = [];
+    let total = 0;
+    while (total < f.size) {
+      if (skipRequested) { log('ผู้ใช้สั่งข้ามไฟล์'); break; }
+      let res;
+      try { res = await device.transferIn(epIn.endpointNumber, 65536); }
+      catch (e) { log('read error: ' + e.message + ' — หยุด'); break; }
+      if (!res.data || res.data.byteLength === 0) { log('ได้ chunk ว่าง — หยุด'); break; }
+      chunks.push(new Uint8Array(res.data.buffer));
+      total += res.data.byteLength;
+      setProgress(`${f.name}\n${fmtMB(total)} / ${fmtMB(f.size)} (${Math.floor(total / f.size * 100)}%)`);
+    }
+    log(`รับมาทั้งหมด ${total} bytes`);
+    if (total === 0) { setStatus('❌ ไม่ได้ข้อมูลเลย'); return; }
+
+    const raw = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { raw.set(c, off); off += c.length; }
+    const mp3 = stripHDA(raw);
+    log(`strip HDA แล้วเหลือ ${mp3.length} bytes`);
+
+    const outName = f.name.replace(/\.hda?$/i, '') + '.mp3';
+    saveBlob(new Blob([mp3], { type: 'audio/mpeg' }), outName);
+    setStatus(`✅ ดาวน์โหลด ${outName} สำเร็จ (เช็คใน Downloads แล้วลองเปิดฟัง)`);
+    setProgress('');
+  } catch (e) {
+    setStatus('❌ Download ล้มเหลว: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    $('btnSkip').disabled = true;
+  }
+}
+
+function stripHDA(raw) {
+  if (raw[0] !== 0x12 || raw[1] !== 0x34) return raw;  // ไม่มี HDA header — เป็น mp3 ตรง ๆ
+  const parts = [];
+  let offset = 0, total = 0;
+  while (offset + 12 <= raw.length && raw[offset] === 0x12 && raw[offset + 1] === 0x34) {
+    const dataLen = (raw[offset + 10] << 8) | raw[offset + 11];
+    const chunk = raw.subarray(offset + 12, offset + 12 + dataLen);
+    parts.push(chunk);
+    total += chunk.length;
+    offset += 12 + dataLen;
+  }
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+}
+
+$('btnConnect').onclick = connect;
+$('btnScan').onclick = scanFiles;
+$('btnSkip').onclick = () => { skipRequested = true; };
+log(`WebUSB available: ${!!navigator.usb}`);
+</script>
+</body>
+</html>
