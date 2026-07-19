@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- HiDock Sync Android — v1.1
+<!-- HiDock Sync Android — v1.2
      HiDock (WebUSB) → strip HDA → .mp3 → upload OneDrive ผ่าน Microsoft Graph
      Auth: device code flow ผ่าน Cloudflare Worker proxy (worker/worker.js)
      Protocol อ้างอิง Handoff_hidock_mobile.md + ต้นฉบับ PY_PersonalPortal/templates/hidock.html -->
@@ -45,7 +45,7 @@
 </style>
 </head>
 <body>
-<h1>HiDock Sync <small style="color:#666">v1.1</small></h1>
+<h1>HiDock Sync <small style="color:#666">v1.2</small></h1>
 
 <div id="toolbar">
   <button id="btnConnect" class="primary">🔌 Connect HiDock</button>
@@ -64,8 +64,8 @@
 </div>
 
 <div id="row2" style="display:none">
-  <button id="btnScan">🔄 Scan</button>
-  <button id="btnCheck" disabled>☁️ เช็คสถานะ OneDrive</button>
+  <button id="btnScan">1.Scan P1</button>
+  <button id="btnCheck" disabled>2.Scan OneDrive</button>
   <select id="checkDaysSel" aria-label="ช่วงเวลาที่เช็คสถานะ OneDrive">
     <option value="7" selected>เช็ค 7 วันล่าสุด</option>
     <option value="15">เช็ค 15 วันล่าสุด</option>
@@ -98,7 +98,7 @@
 'use strict';
 
 // ================= config =================
-const VERSION = 'v1.1';
+const VERSION = 'v1.2';
 const WORKER_URL = 'https://hidock-auth.hidock-napanuwat.workers.dev';
 const CLIENT_ID = '14d82eec-204b-4c2f-b7e8-296a70dab67e';               // MS Graph Command Line Tools (public client)
 const SCOPE = 'Files.ReadWrite User.Read offline_access';
